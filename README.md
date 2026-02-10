@@ -22,5 +22,5 @@ The initial system was designed for one-off research runs. As experiments scaled
 - Modularized task definitions to allow extension to new platforms.
 - Added a status tracking layer to reduce reliance on logs.
 
-#### AI Collaboration
-LLMs were used to explore alternative package structures and UI patterns. All architectural decisions and tradeoffs were evaluated and finalized manually.
+> *AI Collaboration:*\
+> LLMs were used to explore alternative package structures and UI patterns. All architectural decisions and tradeoffs were evaluated and finalized manually.
