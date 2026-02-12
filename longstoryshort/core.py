@@ -388,7 +388,7 @@ class YouTubeAuditor:
             WebDriverWait(self._driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, '//a[@title="YouTube Home"]'))
             )
-            logging.info("Login successful")
+            
             time.sleep(1)
             self.logged_in = True
             self._emit_progress("login_success", username=username)
@@ -399,7 +399,7 @@ class YouTubeAuditor:
             self._emit_progress("login_failed", error=str(e))
             return False
 
-    def CleanUp(self, kill=True):
+    def clean_up(self, kill=True):
         """Clean up browser session and driver.
 
         Parameters
@@ -411,76 +411,43 @@ class YouTubeAuditor:
 
         self._emit_progress("cleanup_started", kill=kill)
 
-        try:
-            while len(self._driver.window_handles) > 1:
-                self._driver.switch_to.window(self._driver.window_handles[-1])
-                self._driver.close()
-                self._driver.switch_to.window(self._driver.window_handles[0])
-        except:
-            logging.error("Failed to close extra tabs during cleanup")
+        while len(self._driver.window_handles) > 1:
+            self._driver.switch_to.window(self._driver.window_handles[-1])
+            self._driver.close()
+            self._driver.switch_to.window(self._driver.window_handles[0])
 
-        try:
-            if not kill:
-                self._driver.delete_all_cookies()
+        if kill:
+            self._driver.quit()
+            self._driver = None
+            self.initialized = False
+            self._emit_progress("cleanup_complete", kill=kill)
+            
+        else:
+            # Clear browser data and cookies, and log out from the account if logged in
+            ## Note: This clears account history. If the same account is used in the next run, it will start with a "clean" slate without any history.
+            ## However, this does not clear the account's persona, and YouTube may still recommend videos based on the account's overall profile and past behavior outside of this audit.
+            try:
+                # locate the "Delete from this device" button through selector #deleteButton
                 self._driver.get("chrome://settings/clearBrowserData")
                 time.sleep(1)
-                # Complex shadow DOM navigation to clear browser data
-                # (Original implementation kept as-is)
-                try:
-                    dom = self._driver.find_element(By.XPATH, ".//settings-ui")
-                    shadow = self._driver.execute_script(
-                        "return arguments[0].shadowRoot", dom
-                    )
-                    dom2 = shadow.find_element(By.ID, "main")
-                    shadow2 = self._driver.execute_script(
-                        "return arguments[0].shadowRoot", dom2
-                    )
-                    dom3 = shadow2.find_element(By.CSS_SELECTOR, "settings-basic-page")
-                    shadow3 = self._driver.execute_script(
-                        "return arguments[0].shadowRoot", dom3
-                    )
-                    dom4 = shadow3.find_element(By.ID, "basicPage").find_elements(
-                        By.CSS_SELECTOR, "settings-section"
-                    )[4]
-                    assert dom4.get_attribute("page-title") == "Privacy and security"
-                    dom5 = dom4.find_element(By.CSS_SELECTOR, "settings-privacy-page")
-                    shadow5 = self._driver.execute_script(
-                        "return arguments[0].shadowRoot", dom5
-                    )
-                    dom6 = shadow5.find_element(
-                        By.CSS_SELECTOR, "settings-clear-browsing-data-dialog"
-                    )
-                    shadow6 = self._driver.execute_script(
-                        "return arguments[0].shadowRoot", dom6
-                    )
-                    dom7 = shadow6.find_element(By.ID, "clearBrowsingDataDialog")
-                    dom7.find_element(By.ID, "clearButton").click()
-                except:
-                    logging.error("Failed to clean up browser history")
+                WebDriverWait(self._driver, 10).until(EC.element_to_be_clickable((By.ID, "deleteButton"))).click()
+                self._driver.delete_all_cookies()
+            except Exception as e:
+                logging.error("Failed to clean up browser history")
+                logging.error(e)
+                self._emit_progress("cleanup_failed", error=str(e), kill=kill)
 
-                self.logged_in = False
-                self.account = ["", ""]
-        except:
-            logging.error("Failed to clean up the driver")
+            self.logged_in = False
+            self.account = ["", ""]
 
-        if self._driver and kill:
-            try:
-                self._driver.quit()
-            except Exception:
-                pass
-            self._driver = None
-
-        self.initialized = False
-        logging.info("Cleanup complete")
-        self._emit_progress("cleanup_complete")
 
     def __del__(self):
         if self.initialized:
-            self.CleanUp()
+            self.clean_up()
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self.initialized:
-            self.CleanUp()
+            self.clean_up()
 
     def Train(self, seed_ids: list[str]) -> bool:
         """Train the recommendation algorithm by watching seed videos.
