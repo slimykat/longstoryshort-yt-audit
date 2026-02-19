@@ -88,7 +88,7 @@ class YouTubeAuditor:
         self.browser_type = None
         # Experiment state
         self.seed_ids = []
-        self.path = []
+        self.play_next = []
         self.sidebars = []  # only in long format
         self.preloads = []  # only in short format
         self.restricted = []
@@ -273,7 +273,7 @@ class YouTubeAuditor:
 
         # Reset storage
         self.seed_ids = []
-        self.path = []
+        self.play_next = []
         self.sidebars = []
         self.preloads = []
         self.restricted = []
@@ -312,6 +312,7 @@ class YouTubeAuditor:
                 )
         else:
             logging.error("Failed to create new tab")
+            self._emit_progress("driver_ready_failed", mode=mode)
             return True
         working_tab = self._driver.current_window_handle
 
@@ -388,7 +389,7 @@ class YouTubeAuditor:
             WebDriverWait(self._driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, '//a[@title="YouTube Home"]'))
             )
-            
+
             time.sleep(1)
             self.logged_in = True
             self._emit_progress("login_success", username=username)
@@ -421,7 +422,7 @@ class YouTubeAuditor:
             self._driver = None
             self.initialized = False
             self._emit_progress("cleanup_complete", kill=kill)
-            
+
         else:
             # Clear browser data and cookies, and log out from the account if logged in
             ## Note: This clears account history. If the same account is used in the next run, it will start with a "clean" slate without any history.
@@ -440,7 +441,6 @@ class YouTubeAuditor:
             self.logged_in = False
             self.account = ["", ""]
 
-
     def __del__(self):
         if self.initialized:
             self.clean_up()
@@ -449,7 +449,7 @@ class YouTubeAuditor:
         if self.initialized:
             self.clean_up()
 
-    def Train(self, seed_ids: list[str]) -> bool:
+    def train(self, seed_ids: list[str]) -> bool:
         """Train the recommendation algorithm by watching seed videos.
 
         Parameters
@@ -474,7 +474,6 @@ class YouTubeAuditor:
         self.seed_ids = seed_ids
         total = len(seed_ids)
 
-        logging.info("Start Training %d videos in %s mode", total, self.mode)
         self._emit_progress("training_started", total_videos=total, mode=self.mode)
 
         for idx, vid in enumerate(seed_ids):
@@ -486,12 +485,11 @@ class YouTubeAuditor:
                 self._emit_progress("training_failed", video_id=vid)
                 return True
 
-        logging.info("Training done")
         self._emit_progress("training_complete", total_videos=total)
         return False
 
     def watch(
-        self, video_id: str, mode: str = None, max_duration: int | float = None
+        self, video_id: str, mode: str = None, max_duration: int | float = None, _default_video_len: int = 180
     ) -> bool:
         """Watch a single video.
 
@@ -537,7 +535,11 @@ class YouTubeAuditor:
         )
         logging.info("Opened %s video: %s", mode, video_id)
 
-        # Wait until the video is playing
+        # Ensure the video is playing
+        ## In our test runs, we observed that sometimes the video element is present
+        ##      but the video is not actually playing, so we check the "paused" attribute.
+        ## We refresh the page and retry, as this seems to resolve some transient issues with the player.
+        ## If the video still fails to play after several attempts, we return True.
         for i in range(self.err_attempts):
             try:
                 path = (
@@ -571,16 +573,16 @@ class YouTubeAuditor:
             return True
 
         # Get the video length
-        video_len = 180  # default to 3 minutes
+        video_len = _default_video_len  # default to 3 minutes
         try:
-            video_len = float(vid.get_attribute("duration") or 180)
+            video_len = float(vid.get_attribute("duration") or _default_video_len)
             logging.info("video length: %d", video_len)
-            if video_len == 0:
-                video_len = 180
+            if video_len == 0: # some videos may report 0 duration due to player issues, treat them as default length
+                video_len = _default_video_len
         except Exception as e:
-            logging.error("Failed to get video length... defaulting to 3 minutes")
+            logging.error("Failed to get video length... defaulting to %d seconds", _default_video_len)
             logging.error(e)
-            video_len = 180
+            video_len = _default_video_len
 
         if isinstance(max_duration, float):  # percentage
             wait_time = int(video_len * max_duration)
@@ -598,7 +600,7 @@ class YouTubeAuditor:
 
         return False
 
-    def GetSidebar(self) -> list[str]:
+    def get_sidebar_rec(self) -> list[str]:
         """Get sidebar recommendations (long-form videos only).
 
         Returns
@@ -606,6 +608,9 @@ class YouTubeAuditor:
         list[str]
             List of recommendation URLs
         """
+        assert self.initialized, "Driver is not initialized"
+        assert self._driver.current_url.startswith(VIDEO_URL_PREFIX_LONG), "Sidebar recommendations only available for long videos"
+
         for i in range(self.err_attempts):
             try:
                 rec_list = WebDriverWait(self._driver, 10).until(
@@ -635,7 +640,7 @@ class YouTubeAuditor:
                 time.sleep(1)
         return []
 
-    def GetPreloadRec(self) -> list[str]:
+    def get_preload_rec(self) -> list[str]:
         """Get preloaded recommendations (short-form videos only).
 
         Returns
@@ -643,6 +648,9 @@ class YouTubeAuditor:
         list[str]
             List of recommendation video IDs
         """
+        assert self.initialized, "Driver is not initialized"
+        assert self._driver.current_url.startswith(VIDEO_URL_PREFIX_SHORT), "Preload recommendations only available for short videos"
+
         for i in range(self.err_attempts):
             try:
                 rec_list = self._driver.find_elements(
@@ -651,7 +659,7 @@ class YouTubeAuditor:
                 )
                 styles = [div.get_attribute("style") for div in rec_list]
                 batch = [
-                    _prefix_short_url(style.split("vi/")[-1].split("/")[0])
+                    VIDEO_URL_PREFIX_SHORT + style.split("vi/")[-1].split("/")[0]
                     for style in styles
                 ]
                 return batch
@@ -664,7 +672,7 @@ class YouTubeAuditor:
                 time.sleep(1)
             except Exception as e:
                 logging.error(
-                    "Critical Error when getting batch recommendation... try again %d/%d",
+                    "Unexpected error when getting batch recommendation... try again %d/%d",
                     i + 1,
                     self.err_attempts,
                 )
@@ -672,7 +680,7 @@ class YouTubeAuditor:
                 time.sleep(1)
         return []
 
-    def Run(self, collect_video_num: int = 15, max_duration: int | float = None) -> int:
+    def collect_play_next(self, collect_video_num: int = 15, max_duration: int | float = None) -> int:
         """Collect recommendations by following autoplay path.
 
         Parameters
@@ -685,9 +693,10 @@ class YouTubeAuditor:
         Returns
         -------
         int
-            0 if successful, -1 if failed
+            False if successful, True if failed
         """
         assert self.initialized, "Driver is not initialized"
+        assert self._driver.current_url.startswith((VIDEO_URL_PREFIX_LONG, VIDEO_URL_PREFIX_SHORT)), "Current URL is not a video page"
         assert isinstance(collect_video_num, int), "collect_video_num must be an int"
         assert collect_video_num > 0, "collect_video_num must be greater than 0"
 
@@ -728,28 +737,36 @@ class YouTubeAuditor:
                     ActionChains(self._driver).send_keys(Keys.ARROW_DOWN).perform()
                 else:
                     logging.error("Unknown mode %s", self.mode)
-                    return -1
+                    return True
                 logging.info("next button pressed")
             except Exception as e:
                 logging.error("play next error, button didn't work in %s", self.mode)
                 logging.error(e)
                 self._emit_progress("collection_failed", error="next_button_failed")
-                return -1
+                return True
 
             # Wait until the URL changes
             try:
                 WebDriverWait(self._driver, 10).until(EC.url_changes(current_url))
-            except Exception as e:
+            except TimeoutException as e:
                 logging.error("URL not changed, try again")
                 logging.error(e)
                 err_attempts -= 1
                 continue
+            except Exception as e:
+                logging.error("Unexpected error when waiting for URL change")
+                logging.error(e)
+                self._emit_progress("collection_failed", error="unexpected_error")
+                return True
 
             time.sleep(1)
             current_url = self._driver.current_url
             logging.info("Current video: %s", current_url)
 
             # Check if the current video is age restricted
+            ## Age restriction messege shows up when the account is not old enough or when the user is not signed in.
+            ## In both cases, we consider the video as "restricted" for the purpose of this audit,
+            ## since the recommendation algorithm will treat them differently from regular videos and we want to capture that signal.
             try:
                 if self.mode == "short":
                     error_handle = WebDriverWait(self._driver, 10).until(
@@ -779,14 +796,29 @@ class YouTubeAuditor:
                         )
 
                         if "sign in" in reason.lower():
-                            logging.error("Age Restricted video %s", current_url)
-                            return -1
+                            logging.error("Age Restricted video %s, can't proceed without signing in", current_url)
+                            # expected to encounter age restricted videos when not signed in
+                            # stop the collection but don't treat it as a failure since it's an expected outcome
+                            return False
 
-                        WebDriverWait(error_handle, 10).until(
-                            EC.element_to_be_clickable(
-                                (By.XPATH, ".//button-view-model")
-                            )
-                        ).click()
+                        # videos with sensitive content can still be played even with the restriction message
+                        # attempt to click the button to proceed
+                        while err_attempts > 0:
+                            try:
+                                WebDriverWait(error_handle, 10).until(
+                                    EC.element_to_be_clickable(
+                                        (By.XPATH, ".//button-view-model")
+                                    )
+                                ).click()
+                                break
+                            except TimeoutException:
+                                logging.error("Next button not clickable... try again")
+                                err_attempts -= 1
+                            except Exception as e:
+                                logging.error("Unexpected error when clicking next button")
+                                logging.error(e)
+                                self._emit_progress("collection_failed", error="unexpected_error")
+                                return True
 
                 else:  # long mode
                     error_handle = WebDriverWait(self._driver, 10).until(
@@ -823,12 +855,27 @@ class YouTubeAuditor:
 
                         if "sign in" in reason.lower():
                             logging.error("Age Restricted video %s", current_url)
-                            return -1
+                            # expected to encounter age restricted videos when not signed in
+                            # stop the collection but don't treat it as a failure since it's an expected outcome
+                            return True
 
-                        WebDriverWait(error_handle, 10).until(
-                            EC.element_to_be_clickable((By.XPATH, ".//button"))
-                        ).click()
-
+                        # videos with sensitive content can still be played even with the restriction message
+                        # attempt to click the button to proceed
+                        while err_attempts > 0:
+                            try:
+                                WebDriverWait(error_handle, 10).until(
+                                    EC.element_to_be_clickable((By.XPATH, ".//button"))
+                                ).click()
+                                break
+                            except TimeoutException:
+                                logging.error("Next button not clickable... try again")
+                                err_attempts -= 1   
+                            except Exception as e:
+                                logging.error("Unexpected error when clicking next button")
+                                logging.error(e)
+                                self._emit_progress("collection_failed", error="unexpected_error")
+                                return True
+                            
             except Exception as e:
                 logging.error("Age restriction detection failed")
                 logging.error(e)
@@ -836,20 +883,20 @@ class YouTubeAuditor:
             # Collect recommendations
             if self.mode == "short":
                 try:
-                    preload = self.GetPreloadRec()
+                    preload = self.get_preload_rec()
                     self.preloads.append(preload)
                 except Exception as e:
                     logging.error("Failed to get preload at %s", current_url)
                     logging.error(e)
             elif self.mode == "long":
                 try:
-                    sidebar = self.GetSidebar()
+                    sidebar = self.get_sidebar_rec()
                     self.sidebars.append(sidebar)
                 except Exception as e:
                     logging.error("Failed to get sidebar at %s", current_url)
                     logging.error(e)
 
-            self.path.append(current_url)
+            self.play_next.append(current_url)
             count -= 1
 
             # Watch the current video
@@ -891,7 +938,7 @@ class YouTubeAuditor:
         )
         return 0
 
-    def Report(self) -> dict:
+    def report(self) -> dict:
         """Generate report of collected data.
 
         Returns
@@ -905,16 +952,17 @@ class YouTubeAuditor:
             "player_mode": self.mode,
             "max_duration": self.max_duration,
             "recommendations": {
-                "autoplay_rec": self.path,
+                "autoplay_rec": self.play_next,
                 "sidebar_rec": self.sidebars,
                 "preload_rec": self.preloads,
                 "restricted": self.restricted,
             },
         }
 
-    def HelloWorld(self):
+    def hello_world(self):
         """Simple test function to verify driver works."""
         print("Testing")
         self._driver.get("https://www.youtube.com/")
         time.sleep(10)
+        assert self._driver.current_url.startswith("https://www.youtube.com/"), "Failed to open YouTube homepage"
         print("Test done")
