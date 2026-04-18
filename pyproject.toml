@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "longstoryshort"
+version = "0.1.0"
+description = "Automated YouTube recommendation audit tool for studying long- vs. short-form video recommendations"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE" ]
+requires-python = ">=3.10"
+dependencies = [
+    "selenium>=4.11.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["longstoryshort"]
+exclude = ["examples*"]
+
+[project.urls]
+Repository = "https://github.com/your-username/longstoryshort-yt-audit"

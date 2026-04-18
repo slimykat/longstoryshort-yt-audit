@@ -84,7 +84,7 @@ class YouTubeAuditor:
         self._driver = None
         self._driver_option = None
         self.initialized = False
-        self.adblock = None
+        self.extension = None
         self.browser_type = None
         # Experiment state
         self.seed_ids = []
@@ -119,7 +119,9 @@ class YouTubeAuditor:
     def configure_browser(
         self,
         browser_type: Literal["Chrome", "Firefox", "Ie", "Edge", "Safari"] = "Chrome",
-        adblock: bool | str = False,
+        extension: bool | str = False,
+        binary_location: str = None,
+        browser_version: str = None,
         incognito: bool = False,
         headless: bool = True,
         custom_argument: list[str] = None,
@@ -127,15 +129,26 @@ class YouTubeAuditor:
         """Configure browser options before launching.
 
         This method must be called before launch_browser(). It sets up browser
-        options including privacy mode, headless operation, and ad blocking.
+        options including privacy mode, headless operation, and Chrome extensions.
+        Safe to call multiple times before launch_browser() to update configuration.
 
         Parameters
         ----------
         browser_type : Literal["Chrome", "Firefox", "Ie", "Edge", "Safari"], optional
             Browser to use (default: "Chrome")
-        adblock : bool | str, optional
-            Enable ad blocker. If True, searches for .crx file in current directory.
-            If string, uses provided path to extension (default: False)
+        extension : bool | str, optional
+            Load Chrome extension(s) (.crx). Only supported in Chrome mode.
+            If True, loads all .crx files found in the current working directory.
+            If a path to a .crx file, loads that specific extension.
+            If a path to a directory, loads all .crx files in that directory.
+            (default: False)
+        binary_location : str, optional
+            Path to the browser binary. Useful when the browser is not in the
+            default location or a specific version is required (default: None)
+        browser_version : str, optional
+            Browser version to use, e.g. "stable", "beta", or a specific version
+            number. Used by Selenium Manager to download the matching driver
+            automatically (default: None)
         incognito : bool, optional
             Run browser in incognito/private mode (default: False)
         headless : bool, optional
@@ -145,13 +158,15 @@ class YouTubeAuditor:
 
         Raises
         ------
+        AssertionError
+            If the browser is already running (call CleanUp() first)
         ValueError
-            If browser_type is not supported
+            If browser_type is not supported, or extension parameter is invalid
         FileNotFoundError
-            If adblock extension file not found
-        FileExistsError
-            If multiple .crx files found and path not specified
+            If the specified .crx file or directory is not found, or no .crx files
+            are found in the target directory
         """
+        assert not self.initialized, "Browser is already running, call CleanUp() first"
         assert browser_type in [
             "Chrome",
             "Firefox",
@@ -168,6 +183,11 @@ class YouTubeAuditor:
             raise ValueError(f"Unsupported browser type: {self.browser_type}") from e
         driver_option = option_obj()
 
+        if binary_location:
+            driver_option.binary_location = binary_location
+        if browser_version:
+            driver_option.browser_version = browser_version
+
         # Set up options for the chrome driver
         if incognito:
             driver_option.add_argument("--incognito")
@@ -182,44 +202,41 @@ class YouTubeAuditor:
             for arg in custom_argument:
                 driver_option.add_argument(arg)
 
-        # Set up adblocker
-        self.adblock = adblock
-        if adblock:
-            if isinstance(adblock, bool):
-                # look for .crx file in the current working directory
-                current_dir = os.getcwd()
-                crx_files = [f for f in os.listdir(current_dir) if f.endswith(".crx")]
-                if len(crx_files) > 1:
-                    logging.error(
-                        "Multiple .crx files found in %s, please specify the adblock extension path",
-                        current_dir,
-                    )
-                    raise FileExistsError(
-                        f"Multiple .crx files found in {current_dir}, please specify the adblock extension path"
-                    )
+        # Set up Chrome extension(s)
+        self.extension = extension
+        if self.browser_type == "Chrome" and extension:
+            # Since May 2025, Chrome removed --load-extension switch. Only older
+            # distributions or patched ChromeDrivers still support loading extensions.
+            logging.warning("Make sure to use a ChromeDriver that supports --load-extension switch")
+            if isinstance(extension, bool):
+                # Load all .crx files found in the current working directory
+                search_dir = os.getcwd()
+                crx_files = [f for f in os.listdir(search_dir) if f.endswith(".crx")]
                 if len(crx_files) == 0:
-                    logging.error(
-                        "No .crx files found in %s, please specify the adblock extension path",
-                        current_dir,
-                    )
-                    raise FileNotFoundError(
-                        f"No .crx files found in {current_dir}, please specify the adblock extension path"
-                    )
-                extension_path = os.path.join(current_dir, crx_files[0])
-            elif isinstance(adblock, str):
-                # check if the provided path exists
-                if not os.path.exists(adblock):
-                    logging.error("Ad block extension not found at %s", adblock)
-                    raise FileNotFoundError(
-                        f"Ad block extension not found at {adblock}"
-                    )
-                extension_path = adblock
+                    logging.error("No .crx files found in %s", search_dir)
+                    raise FileNotFoundError(f"No .crx files found in {search_dir}")
+                for crx in crx_files:
+                    driver_option.add_extension(os.path.join(search_dir, crx))
+            elif isinstance(extension, str):
+                if not os.path.exists(extension):
+                    logging.error("Extension path not found: %s", extension)
+                    raise FileNotFoundError(f"Extension path not found: {extension}")
+                if os.path.isdir(extension):
+                    # Load all .crx files in the specified directory
+                    crx_files = [f for f in os.listdir(extension) if f.endswith(".crx")]
+                    if len(crx_files) == 0:
+                        logging.error("No .crx files found in %s", extension)
+                        raise FileNotFoundError(f"No .crx files found in {extension}")
+                    for crx in crx_files:
+                        driver_option.add_extension(os.path.join(extension, crx))
+                else:
+                    # Load the specified .crx file directly
+                    driver_option.add_extension(extension)
             else:
-                logging.critical("Invalid adblock parameter: %s", adblock)
+                logging.critical("Invalid extension parameter: %s", extension)
                 raise ValueError(
-                    "adblock must be a boolean or a string path to the extension"
+                    "extension must be a bool or a string path to a .crx file or directory"
                 )
-            driver_option.add_extension(extension_path)
 
         self._driver_option = driver_option
         self._emit_progress("browser_configured", browser_type=browser_type)
@@ -329,6 +346,7 @@ class YouTubeAuditor:
         ), "Failed to clean up tabs, more than 1 tab still open"
         self.initialized = True
         self._emit_progress("driver_ready", mode=mode)
+        return False
 
     def log_in(self, username: str, password: str) -> bool:
         """Log in to YouTube with Google account.
@@ -430,7 +448,7 @@ class YouTubeAuditor:
             try:
                 # locate the "Delete from this device" button through selector #deleteButton
                 self._driver.get("chrome://settings/clearBrowserData")
-                time.sleep(1)
+                self._driver.implicitly_wait(1)
                 WebDriverWait(self._driver, 10).until(EC.element_to_be_clickable((By.ID, "deleteButton"))).click()
                 self._driver.delete_all_cookies()
             except Exception as e:
@@ -440,6 +458,9 @@ class YouTubeAuditor:
 
             self.logged_in = False
             self.account = ["", ""]
+
+    def __enter__(self):
+        return self
 
     def __del__(self):
         if self.initialized:
@@ -564,7 +585,7 @@ class YouTubeAuditor:
                 )
                 logging.error(e)
                 self._driver.refresh()
-                time.sleep(2)
+                self._driver.implicitly_wait(2)
         else:
             logging.error("Video %s is not playing", self._driver.current_url)
             self._emit_progress(
@@ -587,14 +608,17 @@ class YouTubeAuditor:
         if isinstance(max_duration, float):  # percentage
             wait_time = int(video_len * max_duration)
         else:  # seconds
-            wait_time = min(video_len, max_duration) - 1
+            wait_time = min(video_len, max_duration)
 
         # Watch the video
         logging.info("Watching %s video for %d seconds", mode, max(wait_time, 0))
         self._emit_progress(
             "watching", video_id=video_id, duration=video_len, wait_time=wait_time
         )
-        time.sleep(max(wait_time, 0))
+        self._driver.implicitly_wait(max(wait_time, 0))
+        # pause after the video is played for x seconds
+        ActionChains(self._driver).send_keys("k").perform()
+
         logging.info("Finished %s video: %s", mode, video_id)
         self._emit_progress("watch_complete", video_id=video_id)
 
@@ -680,7 +704,7 @@ class YouTubeAuditor:
                 time.sleep(1)
         return []
 
-    def collect_play_next(self, collect_video_num: int = 15, max_duration: int | float = None) -> int:
+    def collect_play_next(self, collect_video_num: int = 15, max_duration: int | float = None) -> bool:
         """Collect recommendations by following autoplay path.
 
         Parameters
@@ -692,7 +716,7 @@ class YouTubeAuditor:
 
         Returns
         -------
-        int
+        bool
             False if successful, True if failed
         """
         assert self.initialized, "Driver is not initialized"
@@ -759,7 +783,7 @@ class YouTubeAuditor:
                 self._emit_progress("collection_failed", error="unexpected_error")
                 return True
 
-            time.sleep(1)
+            self._driver.implicitly_wait(1)
             current_url = self._driver.current_url
             logging.info("Current video: %s", current_url)
 
@@ -875,7 +899,7 @@ class YouTubeAuditor:
                                 logging.error(e)
                                 self._emit_progress("collection_failed", error="unexpected_error")
                                 return True
-                            
+
             except Exception as e:
                 logging.error("Age restriction detection failed")
                 logging.error(e)
@@ -926,17 +950,19 @@ class YouTubeAuditor:
                 wait_time = 0
 
             logging.info("waiting for %d seconds", wait_time)
-            time.sleep(max(wait_time, 0))
-
+            self._driver.implicitly_wait(max(wait_time, 0))
         if err_attempts <= 0:
             logging.error("Run error... too many retries")
             self._emit_progress("collection_failed", error="too_many_retries")
-            return -1
+            return True
+
+        # pause videos after collection is finished
+        ActionChains(self._driver).send_keys("k").perform()
 
         self._emit_progress(
             "collection_complete", total_collected=collect_video_num - count
         )
-        return 0
+        return False
 
     def report(self) -> dict:
         """Generate report of collected data.
