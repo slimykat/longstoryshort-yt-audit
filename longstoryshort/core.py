@@ -881,7 +881,7 @@ class YouTubeAuditor:
                             logging.error("Age Restricted video %s", current_url)
                             # expected to encounter age restricted videos when not signed in
                             # stop the collection but don't treat it as a failure since it's an expected outcome
-                            return True
+                            return False
 
                         # videos with sensitive content can still be played even with the restriction message
                         # attempt to click the button to proceed

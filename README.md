@@ -1,9 +1,12 @@
-# YouTube Auditor 
-A auditing tool for running and monitoring recommendation experiments across video formats. Originally built to support the [paper](https://kumarde.com/papers/longstoryshort.pdf): "Long Story Short: Auditing U.S. Political Polarization in Recommendations for Long- vs. Short-form Videos on YouTube
+# YouTube Auditor
 
-This tool is trying to automate simulating user's behavior when browsing on both YouTube and YouTube Shorts -- specifically the "swiping" pattern where the user simply consumes, or partically consumes, what was recommended by the recommendation system one after another. 
+![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-green) ![Selenium](https://img.shields.io/badge/selenium-%3E%3D4.11-brightgreen)
 
-This tool is developed and tested with Chrome Browser. Other browsers may be supported but without guanrantee functionality.
+An automated auditing tool for studying how YouTube's recommendation algorithm behaves differently for long-form videos versus YouTube Shorts. Originally built to support the paper: ["Long Story Short: Auditing U.S. Political Polarization in Recommendations for Long- vs. Short-form Videos on YouTube"](https://kumarde.com/papers/longstoryshort.pdf).
+
+The tool simulates a user's browsing session — watching a series of seed videos to shape a recommendation profile, then following the autoplay chain and capturing every recommendation YouTube surfaces along the way.
+
+This tool is developed and tested with Chrome. Other browsers may be supported but without guaranteed functionality.
 
 
 ## Installation
@@ -13,16 +16,14 @@ This tool is developed and tested with Chrome Browser. Other browsers may be sup
 ```bash
 git clone https://github.com/slimykat/longstoryshort-yt-audit.git
 cd longstoryshort-yt-audit
-# # if using python virtual environment (suggested)
-# source .venv/bin/activate 
+# if using python virtual environment (suggested)
+# source .venv/bin/activate
 pip install -e .
 ```
 
 ChromeDriver is managed automatically by Selenium Manager (above version 4.11) — no separate download needed.
 
-## Usage
-
-The simuation process starts from playing a series of pre-determined videos(seed videos in short) to build up the user profile. Then, after the last seed video was played, we collected the queued videos serveral times by pressing the play next button. In the traditional long-form YouTube player, we use the keybind **shift** plus **n**, and in the YouTube Shorts, the **down arrow key**.
+## Quick start
 
 ```python
 from longstoryshort import YouTubeAuditor
@@ -39,41 +40,65 @@ results = auditor.report()
 auditor.clean_up()
 ```
 
-See [`examples/demo.ipynb`](examples/demo.ipynb) for a full walkthrough with annotated outputs for both long-form and Shorts modes.
+See [`examples/demo.ipynb`](examples/demo.ipynb) for a full annotated walkthrough with pre-saved sample outputs for both long-form and Shorts modes.
 
-### Configuration
+## How it works
+
+1. **Configure** — set browser options (headless, incognito, extensions)
+2. **Train** — watch a list of seed videos for `max_duration` seconds each; this builds a recommendation profile that nudges YouTube's algorithm
+3. **Collect** — press play-next (`Shift+N` for long-form, `↓` for Shorts) repeatedly and record every URL visited and every recommendation shown in the sidebar or preload queue
+4. **Report** — get a structured dictionary of everything collected
+
+## Example output
+
+Running a 10-hop long-form audit seeded with three music videos:
+
+```python
+auditor.train(["dQw4w9WgXcQ", "9bZkp7q19f0", "kJQP7kiw5Fk"])
+auditor.collect_play_next(collect_video_num=10)
+print(json.dumps(auditor.report(), indent=2))
+```
+
+```json
+{
+  "training_ids": ["dQw4w9WgXcQ", "9bZkp7q19f0"],
+  "seed_id": "kJQP7kiw5Fk",
+  "player_mode": "long",
+  "max_duration": 10,
+  "recommendations": {
+    "autoplay_rec": [
+      "https://www.youtube.com/watch?v=Jma4nCMpaQM",
+      "https://www.youtube.com/watch?v=iNJG3xbw-2E",
+      "https://www.youtube.com/watch?v=vj5FtwDgmSs",
+      "https://www.youtube.com/watch?v=pU7culxnZT0",
+      "https://www.youtube.com/watch?v=ZWuXzQ4D9u8",
+      "https://www.youtube.com/watch?v=C-fexNlzMtQ",
+      "https://www.youtube.com/watch?v=zdjo712qnyE",
+      "https://www.youtube.com/watch?v=9aBG9yGcWSc",
+      "https://www.youtube.com/watch?v=ga95aB7CAPs",
+      "https://www.youtube.com/watch?v=dZuVOViXOq0"
+    ],
+    "sidebar_rec": [[], [], [], [], [], [], [], [], [], []],
+    "preload_rec": [],
+    "restricted": []
+  }
+}
+```
+
+## Configuration
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `browser_type` | `"Chrome"` | Browser to use (`Chrome`, `Firefox`, `Edge`, `Safari`) |
 | `headless` | `True` | Run without a visible window |
 | `incognito` | `False` | Use private browsing mode |
-| `adblock` | `False` | Load an ad-blocker extension (`.crx` file path or `True` to auto-detect) |
+| `extension` | `False` | Load a Chrome extension (`.crx` file path, directory, or `True` to auto-detect) |
 | `mode` | — | `"long"` for regular videos, `"short"` for YouTube Shorts |
 | `max_duration` | `10` | Seconds to watch each video (int), or fraction of length (float 0–1) |
 
 ## Collected data
 
 `report()` returns a dictionary with all data collected during a run:
-
-```json
-{
-  "training_ids": ["VIDEO_ID_1", "VIDEO_ID_2"],
-  "seed_id": "VIDEO_ID_3",
-  "player_mode": "long",
-  "max_duration": 10,
-  "recommendations": {
-    "autoplay_rec": [
-      "https://www.youtube.com/watch?v=..."
-    ],
-    "sidebar_rec": [
-      ["https://www.youtube.com/watch?v=...", "..."]
-    ],
-    "preload_rec": [],
-    "restricted": []
-  }
-}
-```
 
 | Field | Description |
 |-------|-------------|
